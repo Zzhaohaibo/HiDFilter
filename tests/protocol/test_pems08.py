@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 from basicts.utils.mask import null_val_mask
 from torch.utils.data import DataLoader
@@ -59,6 +60,24 @@ def test_raw_validity_precedes_normalization_and_near_zero_mask(tmp_path):
     assert prepared.inputs_valid.flatten().tolist() == [True, False, False, False, True]
     assert raw_valid_mask(raw).equal(prepared.inputs_valid)
     assert raw_valid_mask(raw).equal(null_val_mask(raw, null_val=0.0))
+
+
+@pytest.mark.parametrize("nonfinite", [np.nan, np.inf, -np.inf])
+def test_nonfinite_raw_artifact_is_a_hard_failure(tmp_path, nonfinite):
+    raw = np.ones((24, 1), dtype=np.float32)
+    raw[0, 0] = nonfinite
+    for split in ("train", "val", "test"):
+        np.save(tmp_path / f"{split}_data.npy", raw)
+
+    for split in ("train", "val", "test"):
+        with pytest.raises(ValueError, match=rf"{split}_data\.npy contains non-finite"):
+            TrafficOnlyForecastingDataset(tmp_path, split)
+
+
+def test_raw_valid_mask_uses_frozen_finite_isclose_semantics():
+    raw = torch.tensor([0.0, 4.0e-5, -4.0e-5, 5.0e-5, -5.0e-5, 5.1e-5, -5.1e-5, 1.0])
+
+    assert raw_valid_mask(raw).tolist() == [False, False, False, False, False, True, True, True]
 
 
 def test_traffic_only_shape_and_no_timestamp_keys(synthetic_pems08_dir):

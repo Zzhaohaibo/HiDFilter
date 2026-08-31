@@ -47,6 +47,8 @@ class TrafficOnlyForecastingDataset(BasicTSForecastingDataset):
             )
         if expected_num_nodes is not None and num_nodes != expected_num_nodes:
             raise ValueError(f"PEMS08 must contain {expected_num_nodes} nodes, got {num_nodes}")
+        if not np.isfinite(self._data).all():
+            raise ValueError(f"{mode}_data.npy contains non-finite raw traffic")
 
     def __getitem__(self, index: int) -> dict[str, np.ndarray]:
         item = super().__getitem__(index)
@@ -84,9 +86,10 @@ def validate_pems08_protocol(data_dir: str | Path) -> dict[str, int]:
 
 
 def raw_valid_mask(raw: torch.Tensor) -> torch.Tensor:
-    """BasicTS null-value semantics, evaluated on raw traffic."""
+    """BasicTS null-value semantics for finite raw traffic, before normalization."""
 
-    return torch.isnan(raw) | (raw.abs() > 5e-5)
+    zero = torch.zeros((), dtype=raw.dtype, device=raw.device)
+    return ~torch.isclose(raw, zero, atol=5e-5)
 
 
 def fit_train_scaler(train_dataset: TrafficOnlyForecastingDataset) -> ZScoreScaler:
@@ -95,6 +98,8 @@ def fit_train_scaler(train_dataset: TrafficOnlyForecastingDataset) -> ZScoreScal
     if str(train_dataset.mode) != "train":
         raise ValueError("scaler statistics must be fitted on the train split")
     raw_train = train_dataset.data
+    if not np.isfinite(raw_train).all():
+        raise ValueError("train_data.npy contains non-finite raw traffic; scaler fitting aborted")
     mean = float(np.mean(raw_train))
     std = float(np.std(raw_train, ddof=0))
     if std == 0.0:

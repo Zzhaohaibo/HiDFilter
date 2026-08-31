@@ -224,6 +224,9 @@ def _assert_target_environment(device: torch.device) -> None:
         failures.append(f"Python is {platform.python_version()}, expected 3.10.x")
     if torch.__version__ != "2.1.2+cu118":
         failures.append(f"PyTorch is {torch.__version__}, expected 2.1.2+cu118")
+    cuda_version = torch.version.cuda or ""
+    if cuda_version.split(".")[:2] != ["11", "8"]:
+        failures.append(f"PyTorch CUDA runtime is {cuda_version or 'unavailable'}, expected 11.8")
     if device.type != "cuda":
         failures.append("CUDA is unavailable")
     else:
