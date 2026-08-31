@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 import torch
 from basicts.metrics import masked_mae
@@ -16,6 +16,9 @@ from hidfilter.protocol.metrics import RawMetricAccumulator, RawMetricReport
 from hidfilter.protocol.pems08 import prepare_batch
 from hidfilter.runtime.determinism import seed_worker
 from hidfilter.runtime.stid import stid_forward
+
+
+ModelForward = Callable[[nn.Module, torch.Tensor], torch.Tensor]
 
 
 @dataclass(frozen=True)
@@ -173,6 +176,7 @@ def train_one_epoch(
     device: torch.device,
     *,
     grad_clip: float,
+    forward_fn: ModelForward = stid_forward,
 ) -> TrainingEpoch:
     model.train()
     forward_timer = _OperationTimer(device)
@@ -198,7 +202,7 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         started = forward_timer.start()
-        prediction = stid_forward(model, prepared.inputs)
+        prediction = forward_fn(model, prepared.inputs)
         loss = masked_mae(prediction, prepared.targets, prepared.targets_valid)
         forward_timer.stop(started)
 
@@ -245,6 +249,8 @@ def evaluate(
     loader: DataLoader,
     scaler: ZScoreScaler,
     device: torch.device,
+    *,
+    forward_fn: ModelForward = stid_forward,
 ) -> ValidationEpoch:
     model.eval()
     metrics = RawMetricAccumulator(horizons=12)
@@ -263,7 +269,7 @@ def evaluate(
         data_wait_seconds += time.perf_counter() - wait_started
         raw_batch = _move_batch(cpu_batch, device)
         prepared = prepare_batch(raw_batch, scaler)
-        prediction = scaler.inverse_transform(stid_forward(model, prepared.inputs))
+        prediction = scaler.inverse_transform(forward_fn(model, prepared.inputs))
         metrics.update(prediction, raw_batch["targets"], prepared.targets_valid)
         latest = raw_batch["inputs"][:, -1:, :, :]
         persistence_prediction = latest.expand(-1, 12, -1, -1)
