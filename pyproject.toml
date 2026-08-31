@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hidfilter"
+version = "0.0.0"
+description = "HiDFilter research implementation"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "numpy==1.24.4",
+    "torch==2.1.2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+pythonpath = ["src", "third_party/BasicTS/src"]
+markers = [
+    "cuda: requires a CUDA device",
+    "pems08: requires real PEMS08 split files",
+]
+filterwarnings = [
+    "ignore:TypedStorage is deprecated:UserWarning",
+]
