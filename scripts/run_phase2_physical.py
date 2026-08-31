@@ -13,12 +13,13 @@ from statistics import mean
 import torch
 
 from hidfilter.model import HiDFilter
-from hidfilter.physical import PhysicalGraphContract
+from hidfilter.physical import PhysicalGraphContract, load_adjacency_artifact
 from hidfilter.protocol.pems08 import (
     NUM_NODES,
     TrafficOnlyForecastingDataset,
     fit_train_scaler,
     move_scaler_to_device,
+    validate_pems08_connectivity_adjacency,
     validate_pems08_protocol,
 )
 from hidfilter.runtime.checkpoint import CheckpointManager, load_model_checkpoint
@@ -84,6 +85,9 @@ def main() -> None:
     if not args.allow_non_target_environment:
         _assert_target_environment(device)
     protocol_counts = validate_pems08_protocol(dataset_dir)
+    adjacency_evidence = validate_pems08_connectivity_adjacency(
+        load_adjacency_artifact(adjacency_path)
+    )
     preparation = prepare_physical_candidates(
         adjacency_path,
         candidate_cache_path,
@@ -223,6 +227,7 @@ def main() -> None:
             "artifact_path": str(adjacency_path),
             "artifact_identifier": adjacency_path.name,
             **contract.as_dict(),
+            **adjacency_evidence,
             "candidate_fingerprint": preparation.artifact.fingerprint,
             "candidate_cache_path": str(candidate_cache_path),
             "candidate_cache_hit": preparation.cache_hit,

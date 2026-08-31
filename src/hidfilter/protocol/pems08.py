@@ -17,6 +17,37 @@ NUM_NODES = 170
 EXPECTED_WINDOWS = {"train": 10_690, "val": 3_548, "test": 3_549}
 
 
+def validate_pems08_connectivity_adjacency(
+    adjacency: np.ndarray,
+) -> dict[str, bool | int | list[int]]:
+    """Validate the frozen BasicTS PEMS08 binary connectivity artifact."""
+
+    adjacency = np.asarray(adjacency)
+    expected_shape = (NUM_NODES, NUM_NODES)
+    if adjacency.shape != expected_shape:
+        raise ValueError(
+            f"PEMS08 adj_mx.pkl must have shape {expected_shape}, got {adjacency.shape}"
+        )
+    if not np.isfinite(adjacency).all():
+        raise ValueError("PEMS08 adj_mx.pkl contains non-finite values")
+    if not np.array_equal(adjacency, adjacency.T):
+        raise ValueError("PEMS08 adj_mx.pkl must be symmetric")
+    if not np.all(np.diag(adjacency) == 0):
+        raise ValueError("PEMS08 adj_mx.pkl diagonal must contain only zero")
+    if not np.all((adjacency == 0) | (adjacency == 1)):
+        raise ValueError("PEMS08 adj_mx.pkl must be a strictly binary connectivity matrix")
+    directed_positive_entry_count = int(np.count_nonzero(adjacency > 0))
+    if directed_positive_entry_count == 0:
+        raise ValueError("PEMS08 adj_mx.pkl must contain a positive off-diagonal edge")
+    return {
+        "adjacency_shape": [NUM_NODES, NUM_NODES],
+        "binary_connectivity_valid": True,
+        "symmetric": True,
+        "zero_diagonal": True,
+        "directed_positive_entry_count": directed_positive_entry_count,
+    }
+
+
 class TrafficOnlyForecastingDataset(BasicTSForecastingDataset):
     """BasicTS forecasting windows with an explicit traffic-only channel."""
 

@@ -12,8 +12,51 @@ from hidfilter.protocol.pems08 import (
     fit_train_scaler,
     prepare_batch,
     raw_valid_mask,
+    validate_pems08_connectivity_adjacency,
     validate_pems08_protocol,
 )
+
+
+def _valid_pems08_connectivity() -> np.ndarray:
+    adjacency = np.zeros((170, 170), dtype=np.float32)
+    adjacency[0, 1] = adjacency[1, 0] = 1.0
+    adjacency[1, 169] = adjacency[169, 1] = 1.0
+    return adjacency
+
+
+def test_valid_pems08_binary_connectivity_reports_formal_evidence():
+    evidence = validate_pems08_connectivity_adjacency(_valid_pems08_connectivity())
+
+    assert evidence == {
+        "adjacency_shape": [170, 170],
+        "binary_connectivity_valid": True,
+        "symmetric": True,
+        "zero_diagonal": True,
+        "directed_positive_entry_count": 4,
+    }
+
+
+def test_pems08_connectivity_requires_exact_170_node_shape():
+    with pytest.raises(ValueError, match="shape"):
+        validate_pems08_connectivity_adjacency(np.zeros((169, 169), dtype=np.float32))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "error"),
+    [
+        (lambda adjacency: adjacency.__setitem__(([0, 1], [1, 0]), 0.5), "binary"),
+        (lambda adjacency: adjacency.__setitem__((0, 0), 1.0), "diagonal"),
+        (lambda adjacency: adjacency.__setitem__((0, 1), 0.0), "symmetric"),
+        (lambda adjacency: adjacency.__setitem__((0, 1), np.inf), "non-finite"),
+        (lambda adjacency: adjacency.fill(0.0), "positive off-diagonal edge"),
+    ],
+)
+def test_invalid_pems08_connectivity_is_a_hard_failure(mutate, error):
+    adjacency = _valid_pems08_connectivity()
+    mutate(adjacency)
+
+    with pytest.raises(ValueError, match=error):
+        validate_pems08_connectivity_adjacency(adjacency)
 
 
 def test_exact_window_counts_and_split_isolation(synthetic_pems08_dir):
