@@ -9,6 +9,7 @@ from torch.nn import functional as F
 
 from hidfilter.filtration import edge_top_p, safe_masked_softmax
 from hidfilter.physical import PhysicalCandidateMetadata
+from hidfilter.semantic import SemanticCandidateMetadata
 
 
 HISTORY_LENGTH = 12
@@ -18,6 +19,7 @@ IDENTITY_DIM = 16
 FAMILY_COUNT = 3
 SELF_FAMILY_ID = 0
 PHYSICAL_FAMILY_ID = 1
+SEMANTIC_FAMILY_ID = 2
 EDGE_TOP_P_RHO = 0.8
 
 
@@ -145,13 +147,32 @@ def equal_average_family_messages(
     return (self_message + available * physical_message) / (1.0 + available)
 
 
+def equal_average_three_family_messages(
+    self_message: torch.Tensor,
+    physical_message: torch.Tensor,
+    physical_available: torch.Tensor,
+    semantic_message: torch.Tensor,
+    semantic_available: torch.Tensor,
+) -> torch.Tensor:
+    """Phase 3 development fusion: equal average over available families only."""
+
+    physical = physical_available.to(dtype=self_message.dtype, device=self_message.device)
+    semantic = semantic_available.to(dtype=self_message.dtype, device=self_message.device)
+    physical = physical.view(1, -1, 1, 1)
+    semantic = semantic.view(1, -1, 1, 1)
+    return (
+        self_message + physical * physical_message + semantic * semantic_message
+    ) / (1.0 + physical + semantic)
+
+
 class HiDFilter(nn.Module):
-    """Single evolving HiDFilter core for Self and optional Physical Fine families."""
+    """Single evolving core for optional Physical and Semantic Fine families."""
 
     def __init__(
         self,
         num_nodes: int,
         physical_candidates: PhysicalCandidateMetadata | None = None,
+        semantic_candidates: SemanticCandidateMetadata | None = None,
     ) -> None:
         super().__init__()
         self.num_nodes = num_nodes
@@ -207,6 +228,29 @@ class HiDFilter(nn.Module):
             "physical_available", physical_candidates.valid.any(dim=-1), persistent=False
         )
 
+        self.has_semantic = semantic_candidates is not None
+        if semantic_candidates is None:
+            semantic_candidates = SemanticCandidateMetadata(
+                source_index=torch.empty((num_nodes, 0), dtype=torch.int64),
+                lag_index=torch.empty((num_nodes, 0), dtype=torch.int64),
+                flat_index=torch.empty((num_nodes, 0), dtype=torch.int64),
+                valid=torch.empty((num_nodes, 0), dtype=torch.bool),
+                prior=torch.empty((num_nodes, 0), dtype=torch.float32),
+            )
+        self._validate_semantic_candidates(semantic_candidates)
+        self.register_buffer(
+            "semantic_source_index", semantic_candidates.source_index, persistent=False
+        )
+        self.register_buffer("semantic_lag_index", semantic_candidates.lag_index, persistent=False)
+        self.register_buffer(
+            "semantic_flat_index", semantic_candidates.flat_index, persistent=False
+        )
+        self.register_buffer("semantic_valid", semantic_candidates.valid, persistent=False)
+        self.register_buffer("semantic_prior", semantic_candidates.prior, persistent=False)
+        self.register_buffer(
+            "semantic_available", semantic_candidates.valid.any(dim=-1), persistent=False
+        )
+
     @property
     def alpha(self) -> torch.Tensor:
         return F.softplus(self.alpha_raw)
@@ -250,7 +294,7 @@ class HiDFilter(nn.Module):
             self.self_prior,
             self.alpha,
         )
-        message = self_output.message
+        physical_message = torch.zeros_like(self_output.message)
         if self.has_physical:
             physical_family_identity = self.fine_family_projection(
                 self.fine_family_embedding.weight[PHYSICAL_FAMILY_ID]
@@ -267,9 +311,34 @@ class HiDFilter(nn.Module):
                 self.physical_prior,
                 self.alpha,
             )
-            message = equal_average_family_messages(
-                message, physical_output.message, self.physical_available
+            physical_message = physical_output.message
+
+        semantic_message = torch.zeros_like(self_output.message)
+        if self.has_semantic:
+            semantic_family_identity = self.fine_family_projection(
+                self.fine_family_embedding.weight[SEMANTIC_FAMILY_ID]
             )
+            semantic_key_global = self.wk(
+                fine_tokens + semantic_family_identity.view(1, 1, 1, HIDDEN_DIM)
+            )
+            semantic_output = compute_fine_family(
+                query,
+                semantic_key_global,
+                value_global,
+                self.semantic_flat_index,
+                self.semantic_valid,
+                self.semantic_prior,
+                self.alpha,
+            )
+            semantic_message = semantic_output.message
+
+        message = equal_average_three_family_messages(
+            self_output.message,
+            physical_message,
+            self.physical_available,
+            semantic_message,
+            self.semantic_available,
+        )
 
         horizon_embedding = self.horizon_embedding.weight.view(
             1, 1, FORECAST_HORIZON, IDENTITY_DIM
@@ -304,6 +373,29 @@ class HiDFilter(nn.Module):
             raise TypeError("Physical lag index must be int64 and valid must be bool")
         if metadata.prior.dtype != torch.float32:
             raise TypeError("Physical prior must be float32")
+
+    def _validate_semantic_candidates(self, metadata: SemanticCandidateMetadata) -> None:
+        candidate_count = metadata.flat_index.shape[1]
+        expected_shape = (self.num_nodes, candidate_count)
+        if any(
+            tensor.shape != expected_shape
+            for tensor in (
+                metadata.source_index,
+                metadata.lag_index,
+                metadata.flat_index,
+                metadata.valid,
+                metadata.prior,
+            )
+        ):
+            raise ValueError("Semantic candidate metadata shapes are inconsistent")
+        if candidate_count not in {0, 96}:
+            raise ValueError(f"Semantic candidates must contain 96 positions, got {candidate_count}")
+        if metadata.source_index.dtype != torch.int64 or metadata.flat_index.dtype != torch.int64:
+            raise TypeError("Semantic source/flat index must be int64")
+        if metadata.lag_index.dtype != torch.int64 or metadata.valid.dtype != torch.bool:
+            raise TypeError("Semantic lag index must be int64 and valid must be bool")
+        if metadata.prior.dtype != torch.float32:
+            raise TypeError("Semantic prior must be float32")
 
 
 # Phase 1 import compatibility without maintaining a second architecture.

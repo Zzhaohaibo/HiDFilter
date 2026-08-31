@@ -11,6 +11,7 @@ from hidfilter.protocol.pems08 import (
     TrafficOnlyForecastingDataset,
     fit_train_scaler,
     prepare_batch,
+    raw_valid_mask_array,
     raw_valid_mask,
     validate_pems08_connectivity_adjacency,
     validate_pems08_protocol,
@@ -121,6 +122,12 @@ def test_raw_valid_mask_uses_frozen_finite_isclose_semantics():
     raw = torch.tensor([0.0, 4.0e-5, -4.0e-5, 5.0e-5, -5.0e-5, 5.1e-5, -5.1e-5, 1.0])
 
     assert raw_valid_mask(raw).tolist() == [False, False, False, False, False, True, True, True]
+
+
+def test_raw_valid_array_uses_the_same_semantics_for_semantic_statistics():
+    raw = np.array([0.0, 4.0e-5, -5.0e-5, 5.1e-5, -5.1e-5, 1.0])
+
+    assert raw_valid_mask_array(raw).tolist() == [False, False, False, True, True, True]
 
 
 def test_traffic_only_shape_and_no_timestamp_keys(synthetic_pems08_dir):

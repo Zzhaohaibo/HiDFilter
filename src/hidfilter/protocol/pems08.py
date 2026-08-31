@@ -123,6 +123,15 @@ def raw_valid_mask(raw: torch.Tensor) -> torch.Tensor:
     return ~torch.isclose(raw, zero, atol=5e-5)
 
 
+def raw_valid_mask_array(raw: np.ndarray) -> np.ndarray:
+    """NumPy form of the frozen raw validity contract for offline statistics."""
+
+    raw = np.asarray(raw)
+    if not np.isfinite(raw).all():
+        raise ValueError("raw traffic contains non-finite values")
+    return ~np.isclose(raw, 0.0, atol=5e-5)
+
+
 def fit_train_scaler(train_dataset: TrafficOnlyForecastingDataset) -> ZScoreScaler:
     """Fit the frozen global scalar Z-score using raw training traffic only."""
 
