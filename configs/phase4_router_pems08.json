@@ -1,0 +1,32 @@
+{
+  "phase": 4,
+  "dataset_dir": "/root/autodl-tmp/datasets/PEMS08",
+  "adjacency_path": "/root/autodl-tmp/datasets/PEMS08/adj_mx.pkl",
+  "graph_contract": {
+    "graph_mode": "undirected",
+    "weight_semantics": "affinity",
+    "conversion_scale": null
+  },
+  "physical_candidate_cache_path": "artifacts/phase4/router/physical_candidates_pems08.npz",
+  "semantic_candidate_cache_path": "artifacts/phase4/router/semantic_candidates_pems08.npz",
+  "checkpoint_dir": "artifacts/phase4/router/checkpoints",
+  "report_path": "reports/phase4_router_cuda.json",
+  "seed": 2026,
+  "epochs": 3,
+  "batch_size": 64,
+  "num_workers": 0,
+  "grad_clip": 5.0,
+  "physical_kp": 8,
+  "semantic_ks": 8,
+  "semantic_min_overlap": 288,
+  "semantic_variance_threshold": 1e-12,
+  "precision": "fp32",
+  "amp": false,
+  "ddp": false,
+  "router": {
+    "family_order": ["Self", "Physical", "Semantic"],
+    "input_dim": 176,
+    "hidden_dim": 64,
+    "top_p_enabled": false
+  }
+}

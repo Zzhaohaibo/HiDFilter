@@ -1,6 +1,6 @@
 # HiDFilter
 
-The repository currently implements **Phase 3: Self + Physical + Semantic Fine dependency spaces**. Family Evidence, Router, and Family Top-p are intentionally not implemented yet.
+The repository currently implements **Phase 4: identity-free Family Evidence and an availability-aware dense Router** over the Self, Physical, and Semantic Fine dependency spaces. Family Top-p is intentionally not implemented yet.
 
 ## Frozen environment
 
@@ -28,11 +28,11 @@ This contract follows BasicTS's PEMS08 preparation code in `third_party/BasicTS/
 
 Semantic candidates use raw training traffic only, pair-specific common-valid first-difference Pearson correlation, `min_overlap=288`, variance threshold `1e-12`, and exclude self, original one-hop Physical neighbors, and selected Physical sources.
 
-Run the local checks and the formal three-epoch Phase 3 CUDA sanity with:
+Run the local checks and the formal three-epoch Phase 4 CUDA sanity with:
 
 ```bash
 pytest -q
-python scripts/run_phase3_semantic.py
+python scripts/run_phase4_router.py
 ```
 
-The runner builds or strictly fingerprint-loads the offline `Kp=8` Physical and `Ks=8` Semantic candidate artifacts, benchmarks `num_workers` in `0/2/4/8`, trains only on train/validation data, saves `best.pt` and `last.pt`, strictly reloads `best.pt`, and writes the report to `reports/phase3_semantic_cuda.json`.
+The runner builds or strictly fingerprint-loads the offline `Kp=8` Physical and `Ks=8` Semantic candidate artifacts, uses the recommended `num_workers=0`, trains only on train/validation data, saves `best.pt` and `last.pt`, strictly reloads `best.pt`, collects a minimal post-reload dense-Router probability summary, and writes the report to `reports/phase4_router_cuda.json`.

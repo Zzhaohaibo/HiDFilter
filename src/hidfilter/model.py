@@ -21,6 +21,8 @@ SELF_FAMILY_ID = 0
 PHYSICAL_FAMILY_ID = 1
 SEMANTIC_FAMILY_ID = 2
 EDGE_TOP_P_RHO = 0.8
+ROUTER_INPUT_DIM = HIDDEN_DIM + IDENTITY_DIM + IDENTITY_DIM + HIDDEN_DIM + IDENTITY_DIM
+ROUTER_HIDDEN_DIM = 64
 
 
 def history_to_lag_values(history: torch.Tensor) -> torch.Tensor:
@@ -94,6 +96,99 @@ def gather_candidates(global_values: torch.Tensor, flat_index: torch.Tensor) -> 
     flat_values = global_values.reshape(batch_size, -1, width)
     gathered = flat_values[:, flat_index.reshape(-1), :]
     return gathered.reshape(batch_size, *flat_index.shape, width)
+
+
+def compute_family_evidence(
+    lag_mean: torch.Tensor,
+    source_index: torch.Tensor,
+    source_valid: torch.Tensor,
+) -> torch.Tensor:
+    """Aggregate identity-free source content with an unweighted masked mean."""
+
+    batch_size, _, width = lag_mean.shape
+    gathered = lag_mean[:, source_index.reshape(-1), :]
+    gathered = gathered.reshape(batch_size, *source_index.shape, width)
+    valid = source_valid.view(1, *source_valid.shape, 1)
+    source_sum = torch.where(valid, gathered, torch.zeros_like(gathered)).sum(dim=2)
+    source_count = valid.sum(dim=2)
+    denominator = torch.where(source_count > 0, source_count, torch.ones_like(source_count))
+    evidence = source_sum / denominator
+    return torch.where(source_count > 0, evidence, torch.zeros_like(evidence))
+
+
+def masked_router_softmax(
+    router_logits: torch.Tensor,
+    family_available: torch.Tensor,
+) -> torch.Tensor:
+    """Normalize dense family logits over available families only."""
+
+    available = family_available.view(1, family_available.shape[0], 1, FAMILY_COUNT)
+    return safe_masked_softmax(router_logits, available)
+
+
+def compute_router_probability(
+    context: torch.Tensor,
+    family_evidence: torch.Tensor,
+    node_identity: torch.Tensor,
+    horizon_identity: torch.Tensor,
+    route_family_identity: torch.Tensor,
+    family_available: torch.Tensor,
+    router_scorer: nn.Sequential,
+) -> torch.Tensor:
+    """Score the three families without materializing the 176-wide Router input."""
+
+    input_layer = router_scorer[0]
+    weight = input_layer.weight
+    context_end = HIDDEN_DIM
+    node_end = context_end + IDENTITY_DIM
+    horizon_end = node_end + IDENTITY_DIM
+    evidence_end = horizon_end + HIDDEN_DIM
+
+    context_hidden = F.linear(
+        context,
+        weight[:, :context_end],
+        input_layer.bias,
+    ).unsqueeze(2).unsqueeze(3)
+    node_hidden = F.linear(
+        node_identity,
+        weight[:, context_end:node_end],
+    ).view(1, node_identity.shape[0], 1, 1, ROUTER_HIDDEN_DIM)
+    horizon_hidden = F.linear(
+        horizon_identity,
+        weight[:, node_end:horizon_end],
+    ).view(1, 1, horizon_identity.shape[0], 1, ROUTER_HIDDEN_DIM)
+    evidence_hidden = F.linear(
+        family_evidence,
+        weight[:, horizon_end:evidence_end],
+    ).unsqueeze(2)
+    route_hidden = F.linear(
+        route_family_identity,
+        weight[:, evidence_end:ROUTER_INPUT_DIM],
+    ).view(1, 1, 1, FAMILY_COUNT, ROUTER_HIDDEN_DIM)
+    hidden = (
+        context_hidden
+        + node_hidden
+        + horizon_hidden
+        + evidence_hidden
+        + route_hidden
+    )
+    router_logits = router_scorer[2](router_scorer[1](hidden)).squeeze(-1)
+    return masked_router_softmax(router_logits, family_available)
+
+
+def dense_router_fusion(
+    self_message: torch.Tensor,
+    physical_message: torch.Tensor,
+    semantic_message: torch.Tensor,
+    router_probability: torch.Tensor,
+) -> torch.Tensor:
+    """Fuse family messages with dense Router probabilities."""
+
+    return (
+        router_probability[..., SELF_FAMILY_ID, None] * self_message
+        + router_probability[..., PHYSICAL_FAMILY_ID, None] * physical_message
+        + router_probability[..., SEMANTIC_FAMILY_ID, None] * semantic_message
+    )
 
 
 @dataclass(frozen=True)
@@ -182,6 +277,7 @@ class HiDFilter(nn.Module):
         self.node_embedding = nn.Embedding(num_nodes, IDENTITY_DIM)
         self.horizon_embedding = nn.Embedding(FORECAST_HORIZON, IDENTITY_DIM)
         self.fine_family_embedding = nn.Embedding(FAMILY_COUNT, IDENTITY_DIM)
+        self.route_family_embedding = nn.Embedding(FAMILY_COUNT, IDENTITY_DIM)
         self.node_projection = nn.Linear(IDENTITY_DIM, HIDDEN_DIM)
         self.horizon_projection = nn.Linear(IDENTITY_DIM, HIDDEN_DIM)
         self.fine_family_projection = nn.Linear(IDENTITY_DIM, HIDDEN_DIM)
@@ -192,6 +288,11 @@ class HiDFilter(nn.Module):
         self.wk = nn.Linear(HIDDEN_DIM, HIDDEN_DIM)
         self.wv = nn.Linear(HIDDEN_DIM, HIDDEN_DIM)
         self.alpha_raw = nn.Parameter(torch.tensor(math.log(math.expm1(1.0)), dtype=torch.float32))
+        self.router_scorer = nn.Sequential(
+            nn.Linear(ROUTER_INPUT_DIM, ROUTER_HIDDEN_DIM),
+            nn.GELU(),
+            nn.Linear(ROUTER_HIDDEN_DIM, 1),
+        )
 
         self.decoder = nn.Sequential(
             nn.Linear(HIDDEN_DIM * 2 + IDENTITY_DIM, HIDDEN_DIM),
@@ -227,6 +328,16 @@ class HiDFilter(nn.Module):
         self.register_buffer(
             "physical_available", physical_candidates.valid.any(dim=-1), persistent=False
         )
+        self.register_buffer(
+            "physical_evidence_source_index",
+            physical_candidates.source_index[:, ::HISTORY_LENGTH].contiguous(),
+            persistent=False,
+        )
+        self.register_buffer(
+            "physical_evidence_source_valid",
+            physical_candidates.valid[:, ::HISTORY_LENGTH].contiguous(),
+            persistent=False,
+        )
 
         self.has_semantic = semantic_candidates is not None
         if semantic_candidates is None:
@@ -250,6 +361,28 @@ class HiDFilter(nn.Module):
         self.register_buffer(
             "semantic_available", semantic_candidates.valid.any(dim=-1), persistent=False
         )
+        self.register_buffer(
+            "semantic_evidence_source_index",
+            semantic_candidates.source_index[:, ::HISTORY_LENGTH].contiguous(),
+            persistent=False,
+        )
+        self.register_buffer(
+            "semantic_evidence_source_valid",
+            semantic_candidates.valid[:, ::HISTORY_LENGTH].contiguous(),
+            persistent=False,
+        )
+        self.register_buffer(
+            "family_available",
+            torch.stack(
+                (
+                    torch.ones(num_nodes, dtype=torch.bool),
+                    self.physical_available,
+                    self.semantic_available,
+                ),
+                dim=-1,
+            ),
+            persistent=False,
+        )
 
     @property
     def alpha(self) -> torch.Tensor:
@@ -259,14 +392,55 @@ class HiDFilter(nn.Module):
         source_identity = self.node_projection(self.node_embedding.weight)
         return self.fine_token_norm(lag_content + source_identity.view(1, self.num_nodes, 1, HIDDEN_DIM))
 
-    def forward(self, history: torch.Tensor) -> torch.Tensor:
+    def encode_family_evidence(self, lag_content: torch.Tensor) -> torch.Tensor:
+        lag_mean = lag_content.float().mean(dim=2)
+        physical_evidence = compute_family_evidence(
+            lag_mean,
+            self.physical_evidence_source_index,
+            self.physical_evidence_source_valid,
+        )
+        semantic_evidence = compute_family_evidence(
+            lag_mean,
+            self.semantic_evidence_source_index,
+            self.semantic_evidence_source_valid,
+        )
+        return torch.stack((lag_mean, physical_evidence, semantic_evidence), dim=2)
+
+    def compute_router_probability(
+        self,
+        context: torch.Tensor,
+        family_evidence: torch.Tensor,
+    ) -> torch.Tensor:
+        return compute_router_probability(
+            context,
+            family_evidence,
+            self.node_embedding.weight,
+            self.horizon_embedding.weight,
+            self.route_family_embedding.weight,
+            self.family_available,
+            self.router_scorer,
+        )
+
+    def router_probability(self, history: torch.Tensor) -> torch.Tensor:
+        self._validate_history(history)
+        context = self.context_encoder(history)
+        lag_content = self.lag_content_encoder(history)
+        evidence = self.encode_family_evidence(lag_content)
+        return self.compute_router_probability(context, evidence)
+
+    def _validate_history(self, history: torch.Tensor) -> None:
         if history.ndim != 4 or history.shape[1:] != (HISTORY_LENGTH, self.num_nodes, 1):
             raise ValueError(
                 f"history must have shape [B,{HISTORY_LENGTH},{self.num_nodes},1], got {history.shape}"
             )
 
+    def forward(self, history: torch.Tensor) -> torch.Tensor:
+        self._validate_history(history)
+
         context = self.context_encoder(history)
         lag_content = self.lag_content_encoder(history)
+        family_evidence = self.encode_family_evidence(lag_content)
+        router_probability = self.compute_router_probability(context, family_evidence)
         fine_tokens = self.encode_fine_tokens(lag_content)
 
         node_identity = self.node_projection(self.node_embedding.weight)
@@ -332,12 +506,11 @@ class HiDFilter(nn.Module):
             )
             semantic_message = semantic_output.message
 
-        message = equal_average_three_family_messages(
+        message = dense_router_fusion(
             self_output.message,
             physical_message,
-            self.physical_available,
             semantic_message,
-            self.semantic_available,
+            router_probability,
         )
 
         horizon_embedding = self.horizon_embedding.weight.view(
