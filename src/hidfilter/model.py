@@ -200,6 +200,36 @@ class FineFamilyOutput:
     message: torch.Tensor
 
 
+@dataclass(frozen=True)
+class FineDiagnosticState:
+    """Observed Fine filtration tensors from the real prediction path."""
+
+    family_name: str
+    candidate_valid: torch.Tensor
+    dense_probability: torch.Tensor
+    edge_keep: torch.Tensor
+    edge_retained_weight: torch.Tensor
+    source_index: torch.Tensor
+    lag_index: torch.Tensor
+
+
+@dataclass(frozen=True)
+class HiDFilterDiagnosticState:
+    """Minimal hierarchy state required by post-hoc diagnostics."""
+
+    family_dense_probability: torch.Tensor
+    family_keep: torch.Tensor
+    family_retained_weight: torch.Tensor
+    family_available: torch.Tensor
+    fine: tuple[FineDiagnosticState, FineDiagnosticState, FineDiagnosticState]
+
+
+@dataclass(frozen=True)
+class HiDFilterDiagnosticOutput:
+    prediction: torch.Tensor
+    state: HiDFilterDiagnosticState
+
+
 def compute_fine_family(
     query: torch.Tensor,
     key_global: torch.Tensor,
@@ -441,6 +471,37 @@ class HiDFilter(nn.Module):
         *,
         family_top_p_enabled: bool = False,
     ) -> torch.Tensor:
+        prediction, _ = self._forward_impl(
+            history,
+            family_top_p_enabled=family_top_p_enabled,
+            collect_diagnostics=False,
+        )
+        return prediction
+
+    def forward_with_diagnostics(
+        self,
+        history: torch.Tensor,
+        *,
+        family_top_p_enabled: bool = True,
+    ) -> HiDFilterDiagnosticOutput:
+        """Return prediction and observed state from one shared forward computation."""
+
+        prediction, state = self._forward_impl(
+            history,
+            family_top_p_enabled=family_top_p_enabled,
+            collect_diagnostics=True,
+        )
+        if state is None:
+            raise RuntimeError("diagnostic state was not collected")
+        return HiDFilterDiagnosticOutput(prediction=prediction, state=state)
+
+    def _forward_impl(
+        self,
+        history: torch.Tensor,
+        *,
+        family_top_p_enabled: bool,
+        collect_diagnostics: bool,
+    ) -> tuple[torch.Tensor, HiDFilterDiagnosticState | None]:
         self._validate_history(history)
 
         context = self.context_encoder(history)
@@ -475,6 +536,7 @@ class HiDFilter(nn.Module):
             self.alpha,
         )
         physical_message = torch.zeros_like(self_output.message)
+        physical_output: FineFamilyOutput | None = None
         if self.has_physical:
             physical_family_identity = self.fine_family_projection(
                 self.fine_family_embedding.weight[PHYSICAL_FAMILY_ID]
@@ -494,6 +556,7 @@ class HiDFilter(nn.Module):
             physical_message = physical_output.message
 
         semantic_message = torch.zeros_like(self_output.message)
+        semantic_output: FineFamilyOutput | None = None
         if self.has_semantic:
             semantic_family_identity = self.fine_family_projection(
                 self.fine_family_embedding.weight[SEMANTIC_FAMILY_ID]
@@ -512,9 +575,10 @@ class HiDFilter(nn.Module):
             )
             semantic_message = semantic_output.message
 
+        family_keep: torch.Tensor | None = None
         family_weight = router_probability
         if family_top_p_enabled:
-            _, family_weight = family_top_p(
+            family_keep, family_weight = family_top_p(
                 router_probability,
                 self.family_available,
                 rho=FAMILY_TOP_P_RHO,
@@ -535,7 +599,74 @@ class HiDFilter(nn.Module):
         )
         delta = self.decoder(decoder_input)
         latest = history[:, -1, :, :].unsqueeze(2)
-        return (latest + delta).permute(0, 2, 1, 3)
+        prediction = (latest + delta).permute(0, 2, 1, 3)
+
+        if not collect_diagnostics:
+            return prediction, None
+        if family_keep is None:
+            family_keep = self.family_available.view(1, self.num_nodes, 1, FAMILY_COUNT)
+            family_keep = family_keep.expand_as(router_probability)
+        diagnostic_state = HiDFilterDiagnosticState(
+            family_dense_probability=router_probability,
+            family_keep=family_keep,
+            family_retained_weight=family_weight,
+            family_available=self.family_available,
+            fine=(
+                self._fine_diagnostic_state(
+                    "Self",
+                    self_output,
+                    self.self_valid,
+                    self.self_source_index,
+                    self.self_lag_index,
+                    router_probability,
+                ),
+                self._fine_diagnostic_state(
+                    "Physical",
+                    physical_output,
+                    self.physical_valid,
+                    self.physical_source_index,
+                    self.physical_lag_index,
+                    router_probability,
+                ),
+                self._fine_diagnostic_state(
+                    "Semantic",
+                    semantic_output,
+                    self.semantic_valid,
+                    self.semantic_source_index,
+                    self.semantic_lag_index,
+                    router_probability,
+                ),
+            ),
+        )
+        return prediction, diagnostic_state
+
+    @staticmethod
+    def _fine_diagnostic_state(
+        family_name: str,
+        output: FineFamilyOutput | None,
+        candidate_valid: torch.Tensor,
+        source_index: torch.Tensor,
+        lag_index: torch.Tensor,
+        family_reference: torch.Tensor,
+    ) -> FineDiagnosticState:
+        if output is None:
+            shape = (*family_reference.shape[:-1], candidate_valid.shape[-1])
+            dense_probability = family_reference.new_zeros(shape)
+            edge_keep = torch.zeros(shape, dtype=torch.bool, device=family_reference.device)
+            edge_retained_weight = family_reference.new_zeros(shape)
+        else:
+            dense_probability = output.dense_probability
+            edge_keep = output.edge_keep
+            edge_retained_weight = output.edge_weight
+        return FineDiagnosticState(
+            family_name=family_name,
+            candidate_valid=candidate_valid,
+            dense_probability=dense_probability,
+            edge_keep=edge_keep,
+            edge_retained_weight=edge_retained_weight,
+            source_index=source_index,
+            lag_index=lag_index,
+        )
 
     def _validate_physical_candidates(self, metadata: PhysicalCandidateMetadata) -> None:
         candidate_count = metadata.flat_index.shape[1]

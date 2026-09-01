@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+
+# Must be present before the first CUDA/cuBLAS handle is created in the test process.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 
 @pytest.fixture(scope="session")

@@ -1,0 +1,52 @@
+{
+  "phase": 6,
+  "formal_config_version": 1,
+  "model": "HiDFilter Full Hierarchy",
+  "dataset_dir": "/root/autodl-tmp/datasets/PEMS08",
+  "adjacency_path": "/root/autodl-tmp/datasets/PEMS08/adj_mx.pkl",
+  "physical_candidate_cache_path": "artifacts/phase6_physical_candidates.npz",
+  "semantic_candidate_cache_path": "artifacts/phase6_semantic_candidates.npz",
+  "checkpoint_root": "checkpoints/formal_pems08",
+  "report_root": "reports/formal_pems08",
+  "seed": 2026,
+  "max_epochs": 100,
+  "batch_size": 64,
+  "num_workers": 0,
+  "precision": "fp32",
+  "amp": false,
+  "ddp": false,
+  "training_resume": false,
+  "graph_contract": {
+    "graph_mode": "undirected",
+    "weight_semantics": "affinity",
+    "conversion_scale": null
+  },
+  "physical_kp": 8,
+  "semantic_ks": 8,
+  "semantic_min_overlap": 288,
+  "semantic_variance_threshold": 1e-12,
+  "rho_edge": 0.8,
+  "rho_family": 0.8,
+  "family_top_p_warmup_epochs": 5,
+  "optimizer": {
+    "name": "AdamW",
+    "lr": 0.001,
+    "betas": [0.9, 0.999],
+    "eps": 1e-8,
+    "matrix_weight_decay": 0.0001,
+    "other_weight_decay": 0.0,
+    "grad_clip": 5.0
+  },
+  "scheduler": {
+    "name": "frozen_cosine",
+    "epoch_index_start": 0,
+    "epoch_index_end": 99,
+    "eta_max": 0.001,
+    "eta_min": 0.00001
+  },
+  "early_stopping": {
+    "first_eligible_epoch": 6,
+    "patience": 15,
+    "min_delta": 0.0
+  }
+}
