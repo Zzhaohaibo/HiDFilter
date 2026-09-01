@@ -3,6 +3,9 @@ from __future__ import annotations
 import torch
 
 
+FAMILY_COUNT = 3
+
+
 def safe_masked_softmax(logits: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
     """Compute candidate softmax in FP32 with exact-zero invalid rows."""
 
@@ -65,6 +68,28 @@ def edge_top_p(
     weight = selected / safe_denominator
     weight = torch.where(denominator > 0, weight, torch.zeros_like(weight))
     return keep, weight
+
+
+def family_top_p(
+    probability: torch.Tensor,
+    family_available: torch.Tensor,
+    *,
+    rho: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply the shared deterministic Top-p operator to Self/Physical/Semantic."""
+
+    if probability.ndim != 4 or probability.shape[-1] != FAMILY_COUNT:
+        raise ValueError(
+            f"family probability must have shape [B,N,H,3], got {probability.shape}"
+        )
+    if family_available.ndim == 2:
+        expected_shape = (probability.shape[1], FAMILY_COUNT)
+        if family_available.shape != expected_shape:
+            raise ValueError(
+                f"family availability must have shape {expected_shape}, got {family_available.shape}"
+            )
+        family_available = family_available.view(1, probability.shape[1], 1, FAMILY_COUNT)
+    return edge_top_p(probability, family_available, rho=rho)
 
 
 def _deterministic_inclusive_scan(values: torch.Tensor) -> torch.Tensor:

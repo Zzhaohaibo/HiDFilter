@@ -1,0 +1,47 @@
+{
+  "phase": 5,
+  "dataset_dir": "/root/autodl-tmp/datasets/PEMS08",
+  "adjacency_path": "/root/autodl-tmp/datasets/PEMS08/adj_mx.pkl",
+  "graph_contract": {
+    "graph_mode": "undirected",
+    "weight_semantics": "affinity",
+    "conversion_scale": null
+  },
+  "physical_candidate_cache_path": "artifacts/phase5/family_top_p/physical_candidates_pems08.npz",
+  "semantic_candidate_cache_path": "artifacts/phase5/family_top_p/semantic_candidates_pems08.npz",
+  "checkpoint_dir": "artifacts/phase5/family_top_p/checkpoints",
+  "report_path": "reports/phase5_family_top_p_cuda.json",
+  "seed": 2026,
+  "epochs": 6,
+  "batch_size": 64,
+  "num_workers": 0,
+  "grad_clip": 5.0,
+  "physical_kp": 8,
+  "semantic_ks": 8,
+  "semantic_min_overlap": 288,
+  "semantic_variance_threshold": 1e-12,
+  "precision": "fp32",
+  "amp": false,
+  "ddp": false,
+  "scheduler": {
+    "name": "CosineAnnealingLR",
+    "t_max": 99,
+    "eta_min": 1e-5
+  },
+  "router": {
+    "family_order": ["Self", "Physical", "Semantic"],
+    "input_dim": 176,
+    "hidden_dim": 64
+  },
+  "family_top_p": {
+    "rho": 0.8,
+    "warmup_epochs": 5,
+    "first_enabled_epoch": 6,
+    "canonical_order": ["Self", "Physical", "Semantic"]
+  },
+  "formal_training_compatibility": {
+    "max_epochs": 100,
+    "patience": 15,
+    "min_delta": 0
+  }
+}

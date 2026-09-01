@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from hidfilter.filtration import edge_top_p, safe_masked_softmax
+from hidfilter.filtration import edge_top_p, family_top_p, safe_masked_softmax
 from hidfilter.physical import PhysicalCandidateMetadata
 from hidfilter.semantic import SemanticCandidateMetadata
 
@@ -21,6 +21,7 @@ SELF_FAMILY_ID = 0
 PHYSICAL_FAMILY_ID = 1
 SEMANTIC_FAMILY_ID = 2
 EDGE_TOP_P_RHO = 0.8
+FAMILY_TOP_P_RHO = 0.8
 ROUTER_INPUT_DIM = HIDDEN_DIM + IDENTITY_DIM + IDENTITY_DIM + HIDDEN_DIM + IDENTITY_DIM
 ROUTER_HIDDEN_DIM = 64
 
@@ -434,7 +435,12 @@ class HiDFilter(nn.Module):
                 f"history must have shape [B,{HISTORY_LENGTH},{self.num_nodes},1], got {history.shape}"
             )
 
-    def forward(self, history: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        history: torch.Tensor,
+        *,
+        family_top_p_enabled: bool = False,
+    ) -> torch.Tensor:
         self._validate_history(history)
 
         context = self.context_encoder(history)
@@ -506,11 +512,18 @@ class HiDFilter(nn.Module):
             )
             semantic_message = semantic_output.message
 
+        family_weight = router_probability
+        if family_top_p_enabled:
+            _, family_weight = family_top_p(
+                router_probability,
+                self.family_available,
+                rho=FAMILY_TOP_P_RHO,
+            )
         message = dense_router_fusion(
             self_output.message,
             physical_message,
             semantic_message,
-            router_probability,
+            family_weight,
         )
 
         horizon_embedding = self.horizon_embedding.weight.view(
