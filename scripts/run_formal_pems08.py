@@ -45,6 +45,51 @@ from hidfilter.runtime.semantic import (
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_FROZEN_FORMAL_CONFIG = {
+    "phase": 6,
+    "formal_config_version": 1,
+    "model": "HiDFilter Full Hierarchy",
+    "max_epochs": 100,
+    "batch_size": 64,
+    "num_workers": 0,
+    "precision": "fp32",
+    "amp": False,
+    "ddp": False,
+    "training_resume": False,
+    "graph_contract": {
+        "graph_mode": "undirected",
+        "weight_semantics": "affinity",
+        "conversion_scale": None,
+    },
+    "physical_kp": 8,
+    "semantic_ks": 8,
+    "semantic_min_overlap": 288,
+    "semantic_variance_threshold": 1.0e-12,
+    "rho_edge": 0.8,
+    "rho_family": 0.8,
+    "family_top_p_warmup_epochs": 5,
+    "optimizer": {
+        "name": "AdamW",
+        "lr": 1.0e-3,
+        "betas": [0.9, 0.999],
+        "eps": 1.0e-8,
+        "matrix_weight_decay": 1.0e-4,
+        "other_weight_decay": 0.0,
+        "grad_clip": 5.0,
+    },
+    "scheduler": {
+        "name": "frozen_cosine",
+        "epoch_index_start": 0,
+        "epoch_index_end": 99,
+        "eta_max": 1.0e-3,
+        "eta_min": 1.0e-5,
+    },
+    "early_stopping": {
+        "first_eligible_epoch": 6,
+        "patience": 15,
+        "min_delta": 0.0,
+    },
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -82,10 +127,13 @@ def main() -> None:
     max_epochs = (
         args.max_epochs if args.max_epochs is not None else int(config["max_epochs"])
     )
-    if not 6 <= max_epochs <= 100:
-        raise ValueError("formal max_epochs must be in 6..100")
     num_workers = (
         args.num_workers if args.num_workers is not None else int(config["num_workers"])
+    )
+    _validate_runtime_overrides(
+        args.mode,
+        max_epochs=max_epochs,
+        num_workers=num_workers,
     )
     dataset_dir = args.dataset_dir or Path(config["dataset_dir"])
     adjacency_path = args.adjacency_path or Path(config["adjacency_path"])
@@ -403,18 +451,30 @@ def main() -> None:
 
 
 def _validate_config(config: dict[str, object]) -> None:
-    if int(config["formal_config_version"]) != FORMAL_CONFIG_VERSION:
-        raise ValueError("unsupported formal config version")
-    if int(config["max_epochs"]) != 100:
-        raise ValueError("formal config max_epochs must remain 100")
-    if float(config["rho_edge"]) != EDGE_TOP_P_RHO:
-        raise ValueError("rho_edge must remain 0.8")
-    if float(config["rho_family"]) != FAMILY_TOP_P_RHO:
-        raise ValueError("rho_family must remain 0.8")
-    if config["precision"] != "fp32" or config["amp"] or config["ddp"]:
-        raise ValueError("formal precision must remain single-process FP32")
-    if config["training_resume"] is not False:
-        raise ValueError("training resume is not implemented")
+    for name, expected in _FROZEN_FORMAL_CONFIG.items():
+        if name not in config or _canonical_json(config[name]) != _canonical_json(expected):
+            actual = config.get(name, "<missing>")
+            raise ValueError(
+                f"frozen formal config mismatch for {name}: {actual!r} != {expected!r}"
+            )
+
+
+def _validate_runtime_overrides(
+    mode: str,
+    *,
+    max_epochs: int,
+    num_workers: int,
+) -> None:
+    if not 6 <= max_epochs <= 100:
+        raise ValueError("formal max_epochs must be in 6..100")
+    if mode == "final" and max_epochs != 100:
+        raise ValueError("final mode requires max_epochs=100")
+    if mode == "final" and num_workers != 0:
+        raise ValueError("final mode requires num_workers=0")
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _repository_path(path: Path) -> Path:

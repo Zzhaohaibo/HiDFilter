@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -397,6 +399,55 @@ def test_formal_config_and_entrypoints_are_frozen() -> None:
     benchmark = _load_script("benchmark_phase6_diagnostics", BENCHMARK_PATH)
     assert callable(runner.main)
     assert callable(benchmark.main)
+
+
+@pytest.mark.parametrize(
+    ("path", "mutated_value"),
+    [
+        (("batch_size",), 32),
+        (("optimizer", "betas"), [0.8, 0.999]),
+        (("optimizer", "grad_clip"), 4.0),
+        (("scheduler", "eta_min"), 2.0e-5),
+        (("family_top_p_warmup_epochs",), 4),
+        (("early_stopping", "patience"), 14),
+        (("physical_kp",), 4),
+        (("semantic_ks",), 4),
+        (("semantic_min_overlap",), 144),
+        (("graph_contract", "graph_mode"), "directed"),
+    ],
+)
+def test_formal_config_validation_rejects_frozen_semantic_mutations(
+    path: tuple[str, ...], mutated_value: object
+) -> None:
+    runner = _load_script("run_formal_pems08_validation", RUNNER_PATH)
+    config = copy.deepcopy(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
+    target = config
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = mutated_value
+
+    with pytest.raises(ValueError, match="frozen formal config"):
+        runner._validate_config(config)
+
+
+def test_formal_runtime_override_boundaries() -> None:
+    runner = _load_script("run_formal_pems08_overrides", RUNNER_PATH)
+
+    runner._validate_runtime_overrides("final", max_epochs=100, num_workers=0)
+    runner._validate_runtime_overrides("development", max_epochs=6, num_workers=2)
+    with pytest.raises(ValueError, match="final mode requires max_epochs=100"):
+        runner._validate_runtime_overrides("final", max_epochs=6, num_workers=0)
+    with pytest.raises(ValueError, match="final mode requires num_workers=0"):
+        runner._validate_runtime_overrides("final", max_epochs=100, num_workers=2)
+
+
+def test_formal_runner_keeps_explicit_seed_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _load_script("run_formal_pems08_seed", RUNNER_PATH)
+    monkeypatch.setattr(sys, "argv", [str(RUNNER_PATH), "--seed", "314159"])
+
+    assert runner.parse_args().seed == 314159
 
 
 def test_formal_runner_has_explicit_seed_and_no_resume_or_per_epoch_test() -> None:
