@@ -943,8 +943,11 @@ def evaluate_with_diagnostics(
     loader: DataLoader,
     scaler: ZScoreScaler,
     device: torch.device,
+    *,
+    family_top_p_enabled: bool = True,
+    edge_top_p_enabled: bool = True,
 ) -> DiagnosticEvaluation:
-    """Accumulate raw metrics and diagnostics in one Top-p-ON eval pass."""
+    """Accumulate raw metrics and diagnostics in one configured eval pass."""
 
     model.eval()
     metrics = RawMetricAccumulator(horizons=FORECAST_HORIZON)
@@ -962,7 +965,9 @@ def evaluate_with_diagnostics(
         }
         prepared = prepare_batch(raw_batch, scaler)
         output = model.forward_with_diagnostics(
-            prepared.inputs, family_top_p_enabled=True
+            prepared.inputs,
+            family_top_p_enabled=family_top_p_enabled,
+            edge_top_p_enabled=edge_top_p_enabled,
         )
         prediction = scaler.inverse_transform(output.prediction)
         metrics.update(prediction, raw_batch["targets"], prepared.targets_valid)

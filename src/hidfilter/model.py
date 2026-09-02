@@ -238,6 +238,8 @@ def compute_fine_family(
     valid: torch.Tensor,
     prior: torch.Tensor,
     alpha: torch.Tensor,
+    *,
+    edge_top_p_enabled: bool = True,
 ) -> FineFamilyOutput:
     """Compute one independent family distribution without materializing horizon-value tensors."""
 
@@ -249,9 +251,13 @@ def compute_fine_family(
     score = score + prior_bias.view(1, flat_index.shape[0], 1, candidate_count)
     broadcast_valid = valid.view(1, flat_index.shape[0], 1, candidate_count)
     dense_probability = safe_masked_softmax(score, broadcast_valid)
-    edge_keep, edge_weight = edge_top_p(
-        dense_probability, broadcast_valid, rho=EDGE_TOP_P_RHO
-    )
+    if edge_top_p_enabled:
+        edge_keep, edge_weight = edge_top_p(
+            dense_probability, broadcast_valid, rho=EDGE_TOP_P_RHO
+        )
+    else:
+        edge_keep = broadcast_valid.expand_as(dense_probability)
+        edge_weight = dense_probability
     message = torch.einsum("bnhc,bncd->bnhd", edge_weight, candidate_value)
     return FineFamilyOutput(
         dense_probability=dense_probability,
@@ -470,10 +476,12 @@ class HiDFilter(nn.Module):
         history: torch.Tensor,
         *,
         family_top_p_enabled: bool = False,
+        edge_top_p_enabled: bool = True,
     ) -> torch.Tensor:
         prediction, _ = self._forward_impl(
             history,
             family_top_p_enabled=family_top_p_enabled,
+            edge_top_p_enabled=edge_top_p_enabled,
             collect_diagnostics=False,
         )
         return prediction
@@ -483,12 +491,14 @@ class HiDFilter(nn.Module):
         history: torch.Tensor,
         *,
         family_top_p_enabled: bool = True,
+        edge_top_p_enabled: bool = True,
     ) -> HiDFilterDiagnosticOutput:
         """Return prediction and observed state from one shared forward computation."""
 
         prediction, state = self._forward_impl(
             history,
             family_top_p_enabled=family_top_p_enabled,
+            edge_top_p_enabled=edge_top_p_enabled,
             collect_diagnostics=True,
         )
         if state is None:
@@ -500,6 +510,7 @@ class HiDFilter(nn.Module):
         history: torch.Tensor,
         *,
         family_top_p_enabled: bool,
+        edge_top_p_enabled: bool,
         collect_diagnostics: bool,
     ) -> tuple[torch.Tensor, HiDFilterDiagnosticState | None]:
         self._validate_history(history)
@@ -534,6 +545,7 @@ class HiDFilter(nn.Module):
             self.self_valid,
             self.self_prior,
             self.alpha,
+            edge_top_p_enabled=edge_top_p_enabled,
         )
         physical_message = torch.zeros_like(self_output.message)
         physical_output: FineFamilyOutput | None = None
@@ -552,6 +564,7 @@ class HiDFilter(nn.Module):
                 self.physical_valid,
                 self.physical_prior,
                 self.alpha,
+                edge_top_p_enabled=edge_top_p_enabled,
             )
             physical_message = physical_output.message
 
@@ -572,6 +585,7 @@ class HiDFilter(nn.Module):
                 self.semantic_valid,
                 self.semantic_prior,
                 self.alpha,
+                edge_top_p_enabled=edge_top_p_enabled,
             )
             semantic_message = semantic_output.message
 
